@@ -30,7 +30,7 @@ It dumps this directly into an organized `.rust-recon/` directory containing `sc
 
 ---
 
-## 📝 Generated Recon Reports (Via rust-recon Skill)
+##  Generated Recon Reports (Via rust-recon Skill)
 
 `rust-recon` by itself generates **raw JSON files** (`scope.json`, `facts.json`, `summary.json`).
 
@@ -43,7 +43,7 @@ See the **[rust-recon Skill README](https://github.com/NVN404/rust-recon)** for 
 
 ---
 
-## 🏗️ Repository Architecture
+##  Repository Architecture
 
 `rust-recon` is split into **two separate repositories**:
 
@@ -59,7 +59,7 @@ See the **[rust-recon Skill README](https://github.com/NVN404/rust-recon)** for 
 
 ---
 
-## 💻 Installation Guide
+##  Installation Guide
 
 ### Prerequisites
 Ensure you have the Rust toolchain installed:
@@ -93,9 +93,9 @@ Then, link it to your AI agent (see [skill README](https://github.com/NVN404/rus
 
 ---
 
-## 🚀 Usage (Two Paths)
+##  Usage (Two Paths)
 
-### 🎯 Universal Command Pattern
+###  Universal Command Pattern
 
 **All AI agents use the same command syntax:**
 
@@ -181,7 +181,7 @@ We welcome contributions! If you'd like to help improve the AST extraction, add 
 
 ---
 
-## 📄 License
+##  License
 
 This project is licensed under the **MIT License**. Check the `LICENSE` file for more details. 
 
