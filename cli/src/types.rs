@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ScopeInstruction {
     pub ix: String,
     pub context: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Scope {
     pub program: String,
     pub generated_at: String,
@@ -25,7 +25,7 @@ pub struct Facts {
     pub flags: Vec<RiskFlag>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FactInstruction {
     pub name: String,
     pub context: String,
@@ -43,13 +43,13 @@ pub struct FactInstruction {
     pub source: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstructionArg {
     pub name: String,
     pub type_info: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstructionParam {
     pub name: String,
     pub r#type: String,
@@ -57,7 +57,7 @@ pub struct InstructionParam {
     pub overflow_risk: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstructionAccount {
     pub name: String,
     pub type_info: String,
@@ -72,7 +72,7 @@ pub struct InstructionAccount {
     pub close_target: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BodyCheck {
     pub macro_name: String,
     // Using Option because require_keys_eq has lhs/rhs instead of condition
@@ -85,7 +85,7 @@ pub struct BodyCheck {
     pub error: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Arithmetic {
     pub operation: String,
     pub style: String,
@@ -93,7 +93,7 @@ pub struct Arithmetic {
     pub overflow_risk: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RiskFlag {
     pub severity: String,
     pub r#type: String,
@@ -107,33 +107,33 @@ pub struct RiskFlag {
     pub note: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FactAccount {
     pub name: String,
     pub fields: Vec<InstructionArg>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DataStructField {
     pub name: String,
     pub r#type: String,
     pub tags: Vec<String>,  // [NUMERIC], [AUTHORITY], [ACCOUNTING], [TIMESTAMP], [PUBKEY], [PAUSE FLAG], [STORED BUMP]
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FactDataStruct {
     pub name: String,
     pub fields: Vec<DataStructField>,
     pub attributes: Vec<String>,  // #[account] and other macros
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FactError {
     pub code: String,
     pub msg: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CpiCall {
     pub target: String,
     pub instruction: String,
@@ -145,7 +145,7 @@ pub struct CpiCall {
     pub instruction_name: Option<String>,  // which instruction contains this CPI
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RiskSignal {
     pub rule: String,
     pub detail: String,

@@ -78,7 +78,9 @@ fn auto_tag_field(field_name: &str, field_type: &str) -> Vec<String> {
 
     // [TIMESTAMP ⚠ manipulation]
     if (name_lower.contains("timestamp") || name_lower.contains("slot") || 
-        name_lower.contains("epoch")) &&
+
+    name_lower.contains("epoch") || name_lower.contains("time") || 
+        name_lower.contains("duration") || name_lower.contains("created_at")) &&
        (type_lower.contains("i64") || type_lower.contains("u64")) {
         tags.push("[TIMESTAMP ⚠ manipulation]".into());
     }

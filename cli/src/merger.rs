@@ -85,3 +85,65 @@ pub fn generate_summary(facts: &Facts) -> Summary {
     
     sum
 }
+
+pub fn deduplicate_instructions(facts: &mut Facts) {
+    let mut unique_ixs: Vec<crate::types::FactInstruction> = Vec::new();
+
+    for ix in facts.instructions.drain(..) {
+        if let Some(existing) = unique_ixs.iter_mut().find(|e| e.name == ix.name && e.context == ix.context) {
+            // merge, keep whichever has non-empty body_checks/arithmetic/cpi
+            let existing_has_enrichment = !existing.body_checks.is_empty() 
+                || !existing.arithmetic.is_empty() 
+                || !existing.cpi_calls.is_empty();
+            let new_has_enrichment = !ix.body_checks.is_empty() 
+                || !ix.arithmetic.is_empty() 
+                || !ix.cpi_calls.is_empty();
+
+            if new_has_enrichment && !existing_has_enrichment {
+                let mut merged = ix;
+                // keep the accounts from existing if they were parsed better
+                if merged.accounts.is_empty() && !existing.accounts.is_empty() {
+                    merged.accounts = existing.accounts.clone();
+                }
+                *existing = merged;
+            } else if !new_has_enrichment && !existing_has_enrichment {
+                // prefer the one with accounts
+                if existing.accounts.is_empty() && !ix.accounts.is_empty() {
+                    *existing = ix;
+                }
+            } else if existing_has_enrichment && new_has_enrichment {
+                 // append missing elements
+                 for bc in ix.body_checks {
+                     if !existing.body_checks.contains(&bc) { existing.body_checks.push(bc); }
+                 }
+                 for ar in ix.arithmetic {
+                     if !existing.arithmetic.contains(&ar) { existing.arithmetic.push(ar); }
+                 }
+                 for cpi in ix.cpi_calls {
+                     if !existing.cpi_calls.contains(&cpi) { existing.cpi_calls.push(cpi); }
+                 }
+                 for ev in ix.events_emitted {
+                     if !existing.events_emitted.contains(&ev) { existing.events_emitted.push(ev); }
+                 }
+                 for err in ix.error_codes_referenced {
+                     if !existing.error_codes_referenced.contains(&err) { existing.error_codes_referenced.push(err); }
+                 }
+                 for arg in ix.args {
+                     if !existing.args.contains(&arg) { existing.args.push(arg); }
+                 }
+                 // Handle accounts mapping (since sometimes instruction files have them while lib.rs does not, or vice versa)
+                 if existing.accounts.is_empty() && !ix.accounts.is_empty() {
+                     existing.accounts = ix.accounts;
+                 }
+            } else {
+                // existing has enrichment, new doesnt. Merge accounts if missing
+                if existing.accounts.is_empty() && !ix.accounts.is_empty() {
+                    existing.accounts = ix.accounts;
+                }
+            }
+        } else {
+            unique_ixs.push(ix);
+        }
+    }
+    facts.instructions = unique_ixs;
+}

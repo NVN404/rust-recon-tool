@@ -80,6 +80,7 @@ fn main() -> anyhow::Result<()> {
             let idl_data = idl::read_idl_if_exists(&root, p).unwrap_or(None);
             let mut facts = rust_parser::process_rust_code(path, p)?;
             merger::merge_idl_and_rust(idl_data, &mut facts);
+            merger::deduplicate_instructions(&mut facts);
             aggregate::aggregate_flags(&mut facts);
             let summary = merger::generate_summary(&facts);
             

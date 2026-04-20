@@ -39,6 +39,8 @@ To convert these into beautifully formatted **recon reports**, use the [rust-rec
 - **Detailed Reports:** 1000+ lines covering every instruction parameter, account constraint, and trust assumption
 - **Condensed Reports:** High-level summaries with exact counts and key findings
 
+Formatting behavior (for example, Section 2 account presentation rules such as table + fact-card style) is defined in the skill repository and may evolve independently from this CLI tool.
+
 See the **[rust-recon Skill README](https://github.com/NVN404/rust-recon)** for installation and usage.
 
 ---
