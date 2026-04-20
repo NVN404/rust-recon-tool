@@ -23,7 +23,7 @@ When you run `rust-recon` in an Anchor directory, it surgically extracts:
 1.  **Instruction Surface:** Every parameter, account constraint, signer requirement, and mutable state.
 2.  **Account & PDA Catalogue:** Exact seed structures, bump allocations, and space requirements.
 3.  **Cross-Program Invocations (CPIs):** Detects `token::transfer`, `system_program` calls, etc.
-4.  **Security Flags:** Automatically flags high-risk patterns like `UncheckedAccount`, `init_if_needed`, `mut`, and complex arithmetic arrays natively.
+4.  **Recon Signals (Parser Metadata):** Aggregates extracted patterns (for example `UncheckedAccount`, `init_if_needed`, unchecked arithmetic, and `remaining_accounts`) into structured flags for downstream report generation.
 5.  **Error Code Registry:** Pulls all custom errors mapped across the project.
 
 It dumps this directly into an organized `.rust-recon/` directory containing `scope.json`, `facts.json`, and `summary.json`.
@@ -34,10 +34,12 @@ It dumps this directly into an organized `.rust-recon/` directory containing `sc
 
 `rust-recon` by itself generates **raw JSON files** (`scope.json`, `facts.json`, `summary.json`).
 
-To convert these into beautifully formatted **recon reports**, use the [rust-recon](https://github.com/NVN404/rust-recon) Custom Skill with your AI agent (Claude, Copilot, Cursor, Codex, etc.), which generates comprehensive 9-section markdown reports:
+To convert these into beautifully formatted **recon reports**, use the [rust-recon](https://github.com/NVN404/rust-recon) Custom Skill with your AI agent (Claude, Copilot, Cursor, Codex, etc.), which generates strict 9-section markdown reports:
 
-- **Detailed Reports:** 1000+ lines covering every instruction parameter, account constraint, and trust assumption
-- **Condensed Reports:** High-level summaries with exact counts and key findings
+- **Detailed Reports (default):** Full per-instruction 2a-2f schema with strict table headers and section ordering
+- **Condensed Reports:** Summary-first layout for quick snapshots on larger codebases
+
+The skill is recon-first: Section 2 instruction tables do not use `Risk` or `Severity` columns.
 
 Formatting behavior (for example, Section 2 account presentation rules such as table + fact-card style) is defined in the skill repository and may evolve independently from this CLI tool.
 
@@ -105,10 +107,10 @@ Then, link it to your AI agent (see [skill README](https://github.com/NVN404/rus
 [agent-prefix] recon [format]
 ```
 
-Where **[format]** is optional: `condensed`, `detailed`, or omit for standard.
+Where **[format]** is optional: `condensed` or `detailed`. If omitted, the skill defaults to `detailed`.
 
-| Agent | Standard | Condensed | Detailed |
-|-------|----------|-----------|----------|
+| Agent | Default (Detailed) | Condensed | Detailed (Explicit) |
+|-------|---------------------|-----------|----------------------|
 | **Claude** | `/recon` | `/recon condensed` | `/recon detailed` |
 | **Copilot** | `@rust-recon` | `@rust-recon condensed` | `@rust-recon detailed` |
 | **Cursor** | `@rust-recon` | `@rust-recon condensed` | `@rust-recon detailed` |
