@@ -282,31 +282,31 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for AnchorVisitor<'a> {
             
             // Extract CPI flows (including token_2022)
             if stmt_str.contains("token :: transfer") { 
-                cpi_calls.push(CpiCall { target: "token".into(), instruction: "transfer".into(), signer_seeds: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
+                cpi_calls.push(CpiCall { target: "token".into(), instruction: "transfer".into(), signer_seeds: None, from_account: None, to_account: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
             }
             if stmt_str.contains("token :: mint_to") { 
-                cpi_calls.push(CpiCall { target: "token".into(), instruction: "mint_to".into(), signer_seeds: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
+                cpi_calls.push(CpiCall { target: "token".into(), instruction: "mint_to".into(), signer_seeds: None, from_account: None, to_account: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
             }
             if stmt_str.contains("token :: burn") { 
-                cpi_calls.push(CpiCall { target: "token".into(), instruction: "burn".into(), signer_seeds: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
+                cpi_calls.push(CpiCall { target: "token".into(), instruction: "burn".into(), signer_seeds: None, from_account: None, to_account: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
             }
             if stmt_str.contains("token_2022 :: transfer_checked") { 
-                cpi_calls.push(CpiCall { target: "token_2022".into(), instruction: "transfer_checked".into(), signer_seeds: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
+                cpi_calls.push(CpiCall { target: "token_2022".into(), instruction: "transfer_checked".into(), signer_seeds: None, from_account: None, to_account: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
             }
             if stmt_str.contains("token_2022 :: transfer") { 
-                cpi_calls.push(CpiCall { target: "token_2022".into(), instruction: "transfer".into(), signer_seeds: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
+                cpi_calls.push(CpiCall { target: "token_2022".into(), instruction: "transfer".into(), signer_seeds: None, from_account: None, to_account: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
             }
             if stmt_str.contains("token_2022 :: mint_to_checked") { 
-                cpi_calls.push(CpiCall { target: "token_2022".into(), instruction: "mint_to_checked".into(), signer_seeds: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
+                cpi_calls.push(CpiCall { target: "token_2022".into(), instruction: "mint_to_checked".into(), signer_seeds: None, from_account: None, to_account: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
             }
             if stmt_str.contains("system_program :: transfer") || stmt_str.contains("system_instruction :: transfer") { 
-                cpi_calls.push(CpiCall { target: "system".into(), instruction: "transfer".into(), signer_seeds: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
+                cpi_calls.push(CpiCall { target: "system".into(), instruction: "transfer".into(), signer_seeds: None, from_account: None, to_account: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
             }
             if stmt_str.contains("invoke_signed") { 
-                cpi_calls.push(CpiCall { target: "unknown".into(), instruction: "invoke_signed".into(), signer_seeds: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
+                cpi_calls.push(CpiCall { target: "unknown".into(), instruction: "invoke_signed".into(), signer_seeds: None, from_account: None, to_account: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
             }
             else if stmt_str.contains("invoke") { 
-                cpi_calls.push(CpiCall { target: "unknown".into(), instruction: "invoke".into(), signer_seeds: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
+                cpi_calls.push(CpiCall { target: "unknown".into(), instruction: "invoke".into(), signer_seeds: None, from_account: None, to_account: None, nesting_depth: Some("top-level".into()), instruction_name: None }); 
             }
         }
         
@@ -318,6 +318,11 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for AnchorVisitor<'a> {
             error_codes_referenced: vec![],
         };
         syn::visit::Visit::visit_block(&mut body_visitor, &i.block);
+        let body_facts = crate::flow_extractor::extract_body_facts(&i.block);
+        for mut c in body_facts.cpi_calls.clone() {
+            c.instruction_name = Some(name.clone());
+            cpi_calls.push(c);
+        }
         
         if has_context {
             // Set instruction_name on all CPI calls
@@ -340,6 +345,12 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for AnchorVisitor<'a> {
                 error_codes_referenced: body_visitor.error_codes_referenced,
                 pda: vec![],
                 source: Some(self.current_file.clone()),
+                execution_steps: body_facts.execution_steps.clone(),
+                sol_flows: body_facts.sol_flows.clone(),
+                token_flows: body_facts.token_flows.clone(),
+                state_mutations: body_facts.state_mutations.clone(),
+                set_authority_calls: body_facts.set_authority_calls.clone(),
+                partial_lamport_flows: body_facts.partial_lamport_flows.clone(),
             });
         }
         

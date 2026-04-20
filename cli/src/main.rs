@@ -5,6 +5,7 @@ mod rust_parser;
 mod merger;
 mod output;
 mod aggregate;
+mod flow_extractor;
 
 use clap::{Parser, Subcommand};
 use types::{Scope, ScopeInstruction, Facts, Summary};
