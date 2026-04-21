@@ -16,6 +16,8 @@ pub struct Scope {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Facts {
     pub program: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_id: Option<String>,
     pub instructions: Vec<FactInstruction>,
     pub accounts: Vec<FactAccount>,
     pub data_structs: Vec<FactDataStruct>,

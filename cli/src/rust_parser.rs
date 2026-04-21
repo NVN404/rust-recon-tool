@@ -8,12 +8,33 @@ pub fn process_rust_code(project_root: &Path, program: &str) -> Result<Facts> {
     let mut facts = Facts::default();
     facts.program = program.to_string();
 
-    let src_dir = project_root.join("src"); // Fixed path for workspace mode
-    if !src_dir.exists() {
-        return Ok(facts);
-    }
+    // Try multiple source locations in priority order
+    let candidates = vec![
+        project_root.join("src"),
+        project_root.join("programs").join(program).join("src"),
+        project_root.to_path_buf(),
+    ];
 
-    let mut files_to_parse = vec![src_dir.clone()];
+    let search_root = candidates.into_iter().find(|p| {
+        p.exists() && (p.is_dir() && has_rs_files(p))
+    });
+
+    let search_root = match search_root {
+        Some(dir) => dir,
+        None => {
+            eprintln!("⚠ rust-recon: No Rust source files found at any of:");
+            eprintln!("    - {}/src/", project_root.display());
+            eprintln!("    - {}/programs/{}/src/", project_root.display(), program);
+            eprintln!("    - {}/", project_root.display());
+            eprintln!("  Returning empty facts. Check Anchor.toml workspace members.");
+            return Ok(facts);
+        }
+    };
+
+    eprintln!("✓ rust-recon: Scanning source files in: {}", search_root.display());
+
+    let mut files_to_parse = vec![search_root.clone()];
+    let mut file_count = 0;
     
     while let Some(path) = files_to_parse.pop() {
         if path.is_dir() {
@@ -23,12 +44,32 @@ pub fn process_rust_code(project_root: &Path, program: &str) -> Result<Facts> {
                 }
             }
         } else if path.extension().unwrap_or_default() == "rs" {
+            file_count += 1;
             let content = fs::read_to_string(&path)?;
             parse_file_content(&content, &path.to_string_lossy(), &mut facts)?;
         }
     }
 
+    eprintln!("✓ rust-recon: Parsed {} .rs files", file_count);
+
     Ok(facts)
+}
+
+/// Check if a directory (recursively) contains any .rs files
+fn has_rs_files(dir: &Path) -> bool {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        if path.is_dir() {
+            if let Ok(entries) = fs::read_dir(&path) {
+                for entry in entries.filter_map(Result::ok) {
+                    stack.push(entry.path());
+                }
+            }
+        } else if path.extension().unwrap_or_default() == "rs" {
+            return true;
+        }
+    }
+    false
 }
 
 fn parse_file_content(content: &str, file_path: &str, facts: &mut Facts) -> Result<()> {
@@ -240,10 +281,17 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for AnchorVisitor<'a> {
                 let ty_str = pat_type.ty.to_token_stream().to_string();
                 let param_name = pat_type.pat.to_token_stream().to_string();
                 
-                if let syn::Type::Path(type_path) = &*pat_type.ty {
-                    if let Some(segment) = type_path.path.segments.last() {
-                        if segment.ident == "Context" {
-                            has_context = true;
+                // Skip the Context parameter
+                let is_context = if let syn::Type::Path(type_path) = &*pat_type.ty {
+                    type_path.path.segments.last().map(|s| s.ident == "Context").unwrap_or(false)
+                } else {
+                    false
+                };
+
+                if is_context {
+                    has_context = true;
+                    if let syn::Type::Path(type_path) = &*pat_type.ty {
+                        if let Some(segment) = type_path.path.segments.last() {
                             if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                                 if let Some(syn::GenericArgument::Type(syn::Type::Path(inner_path))) = args.args.first() {
                                     if let Some(inner_seg) = inner_path.path.segments.last() {
@@ -251,12 +299,12 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for AnchorVisitor<'a> {
                                     }
                                 }
                             }
-                            continue;
                         }
                     }
+                    continue;
                 }
                 
-                // Handle remaining non-Context params
+                // Handle all other params
                 let overflow_risk = (ty_str.contains("u64") || ty_str.contains("u128")) &&
                     (param_name.contains("amount") || param_name.contains("shares") || 
                      param_name.contains("tokens") || param_name.contains("reward") || param_name.contains("fee"));
@@ -352,6 +400,45 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for AnchorVisitor<'a> {
                 set_authority_calls: body_facts.set_authority_calls.clone(),
                 partial_lamport_flows: body_facts.partial_lamport_flows.clone(),
             });
+        } else {
+            // It's a helper function without a Context. We include it if it has meaningful logic.
+            let has_logic = !body_visitor.body_checks.is_empty() 
+                || !body_visitor.arithmetic.is_empty() 
+                || !cpi_calls.is_empty() 
+                || !body_visitor.events_emitted.is_empty()
+                || !body_visitor.error_codes_referenced.is_empty()
+                || !body_facts.state_mutations.is_empty()
+                || !body_facts.sol_flows.is_empty()
+                || !body_facts.token_flows.is_empty();
+                
+            if has_logic {
+                for cpi in &mut cpi_calls {
+                    cpi.instruction_name = Some(name.clone());
+                }
+                
+                self.facts.instructions.push(FactInstruction {
+                    name: format!("{} (Helper)", name),
+                    context: "Unknown".to_string(),
+                    args: vec![],
+                    params,
+                    accounts: vec![],
+                    checks,
+                    body_checks: body_visitor.body_checks,
+                    arithmetic: body_visitor.arithmetic,
+                    cpi_calls,
+                    events_emitted: body_visitor.events_emitted,
+                    uses_remaining_accounts: body_visitor.uses_remaining_accounts,
+                    error_codes_referenced: body_visitor.error_codes_referenced,
+                    pda: vec![],
+                    source: Some(self.current_file.clone()),
+                    execution_steps: body_facts.execution_steps.clone(),
+                    sol_flows: body_facts.sol_flows.clone(),
+                    token_flows: body_facts.token_flows.clone(),
+                    state_mutations: body_facts.state_mutations.clone(),
+                    set_authority_calls: body_facts.set_authority_calls.clone(),
+                    partial_lamport_flows: body_facts.partial_lamport_flows.clone(),
+                });
+            }
         }
         
         syn::visit::visit_item_fn(self, i);
@@ -537,5 +624,82 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for AnchorVisitor<'a> {
         }
         
         syn::visit::visit_item_enum(self, i);
+    }
+    
+    fn visit_macro(&mut self, m: &'ast syn::Macro) {
+        let mac_path = m.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+        
+        // Extract declare_id!("...") for program ID
+        if mac_path == "declare_id" {
+            let tokens_str = m.tokens.to_token_stream().to_string();
+            // Remove surrounding quotes
+            let program_id = tokens_str.trim().trim_matches('"').to_string();
+            if !program_id.is_empty() {
+                self.facts.program_id = Some(program_id);
+            }
+        }
+        
+        syn::visit::visit_macro(self, m);
+    }
+}
+
+/// Generate a human-readable constraint summary from raw #[account(...)] attribute text.
+/// Instead of dumping the raw attribute, this extracts key constraint types.
+pub fn summarize_constraints(raw_attrs: &str) -> String {
+    let mut parts = Vec::new();
+    
+    if raw_attrs.contains("init,") || raw_attrs.contains("init ") || raw_attrs.ends_with("init") {
+        parts.push("init");
+    }
+    if raw_attrs.contains("init_if_needed") {
+        parts.push("init_if_needed");
+    }
+    if raw_attrs.contains("seeds") {
+        // Extract seeds value
+        if let Some(start) = raw_attrs.find("seeds = [") {
+            let rest = &raw_attrs[start + 9..];
+            if let Some(end) = rest.find(']') {
+                parts.push(&raw_attrs[start..start + 10 + end]);
+            } else {
+                parts.push("seeds=[...]");
+            }
+        } else {
+            parts.push("seeds=[...]");
+        }
+    }
+    if raw_attrs.contains("has_one") {
+        // Already extracted into has_one vec, just note it
+        parts.push("has_one");
+    }
+    if raw_attrs.contains("close") {
+        parts.push("close");
+    }
+    if raw_attrs.contains("address") {
+        parts.push("address");
+    }
+    if raw_attrs.contains("constraint") {
+        parts.push("constraint");
+    }
+    if raw_attrs.contains("token :: mint") || raw_attrs.contains("token::mint") {
+        parts.push("token::mint");
+    }
+    if raw_attrs.contains("token :: authority") || raw_attrs.contains("token::authority") {
+        parts.push("token::authority");
+    }
+    if raw_attrs.contains("mint :: decimals") || raw_attrs.contains("mint::decimals") {
+        parts.push("mint::decimals");
+    }
+    if raw_attrs.contains("mint :: authority") || raw_attrs.contains("mint::authority") {
+        parts.push("mint::authority");
+    }
+    
+    if parts.is_empty() {
+        if raw_attrs.contains("mut") {
+            "mut".to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        parts.join(", ")
     }
 }

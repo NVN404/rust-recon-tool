@@ -244,9 +244,36 @@ fn process_cpi_function_call(call: &ExprCall, facts: &mut BodyFacts, order: usiz
     let func_str = quote!(#call.func).to_string();
     let args_str: Vec<String> = call.args.iter().map(|a| quote!(#a).to_string()).collect();
 
-    let method = extract_cpi_method_name(&func_str);
-    let cpi_ctx_arg = args_str.get(0).cloned().unwrap_or_default();
-    let amount_expr = args_str.get(1).cloned().unwrap_or_else(|| "NOT_EXTRACTED".to_string());
+    let mut method = extract_cpi_method_name(&func_str);
+    let mut cpi_ctx_arg = args_str.get(0).cloned().unwrap_or_default();
+    let mut amount_expr = args_str.get(1).cloned().unwrap_or_else(|| "NOT_EXTRACTED".to_string());
+
+    // Handle direct invoke of system_instruction::transfer
+    if method == "invoke" || method == "invoke_signed" {
+        if cpi_ctx_arg.contains("system_instruction :: transfer") || cpi_ctx_arg.contains("system_instruction::transfer") {
+            method = "transfer".to_string();
+            let inner_call = cpi_ctx_arg.replace("& system_instruction :: transfer", "").replace("&system_instruction::transfer", "");
+            if let Some(start) = inner_call.find('(') {
+                if let Some(end) = inner_call.rfind(')') {
+                    let inner_args = &inner_call[start+1..end];
+                    let parts: Vec<&str> = inner_args.split(',').collect();
+                    if parts.len() >= 3 {
+                        let from_account = clean_account_name(parts[0]);
+                        let to_account = clean_account_name(parts[1]);
+                        amount_expr = parts[2].trim().to_string();
+                        facts.sol_flows.push(SolFlow {
+                            from: from_account.clone(),
+                            to: to_account.clone(),
+                            amount_expression: amount_expr.clone(),
+                            method: "system_program::transfer".to_string(),
+                            instruction_order: order,
+                        });
+                        return; // Done
+                    }
+                }
+            }
+        }
+    }
 
     if is_token_cpi(&method) {
         let (from_account, to_account) = extract_transfer_accounts_from_ctx(&cpi_ctx_arg, &method);
@@ -270,13 +297,13 @@ fn process_cpi_function_call(call: &ExprCall, facts: &mut BodyFacts, order: usiz
         });
     }
 
-    if method == "transfer" && func_str.contains("system") {
+    if method == "transfer" && (func_str.contains("system") || cpi_ctx_arg.contains("system")) {
         let (from_account, to_account) = extract_transfer_accounts_from_ctx(&cpi_ctx_arg, &method);
         facts.sol_flows.push(SolFlow {
             from: from_account,
             to: to_account,
             amount_expression: amount_expr.clone(),
-            method: "system_transfer".to_string(),
+            method: "system_program::transfer".to_string(),
             instruction_order: order,
         });
     }
@@ -338,9 +365,9 @@ fn extract_field_from_struct_str(struct_str: &str, field: &str) -> Option<String
 }
 
 fn clean_account_name(raw: &str) -> String {
-    let s = raw.replace(".to_account_info()", "");
+    let s = raw.replace(".to_account_info()", "").replace(".key()", "").replace("&", "").trim().to_string();
     let parts: Vec<&str> = s.split('.').collect();
-    parts.last().unwrap_or(&raw).to_string()
+    parts.last().unwrap_or(&s.as_str()).to_string()
 }
 
 fn detect_lamport_flow(lhs: &str, rhs: &str, facts: &mut BodyFacts, order: usize) {

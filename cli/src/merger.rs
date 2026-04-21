@@ -170,7 +170,7 @@ fn pair_lamport_flows(partial: Vec<PartialLamportFlow>) -> Vec<SolFlow> {
                     from: a.account.clone(),
                     to: b.account.clone(),
                     amount_expression: a.amount_expression.clone(), // using a's amount since they should match
-                    method: "direct_lamport".to_string(),
+                    method: "try_borrow_mut_lamports()".to_string(),
                     instruction_order: a.instruction_order,
                 });
                 i += 2;

@@ -15,7 +15,7 @@ If you've used AI (LLMs) to analyze smart contracts, you know the problem: **AI 
 `rust-recon` is different:
 *   **100% Deterministic:** It uses the `syn` crate to parse the actual Rust Abstract Syntax Tree (AST). If it's in the code, it's in the output. If it's not, it's not.
 *   **Zero API Keys Needed:** Everything runs entirely locally on your machine. No data is sent to the cloud.
-*   **Perfect Synergy with AI:** By feeding `rust-recon`'s deterministic JSON outputs (`facts.json`, `summary.json`) into any AI agent (via our [rust-recon](https://github.com/NVN404/rust-recon) Skill), you force the AI to write recon reports based strictly on mathematically verified facts, eliminating hallucination.
+*   **Perfect Synergy with AI:** By feeding `rust-recon`'s deterministic JSON outputs (`global_facts.json`, `facts/index.json`, per-instruction facts files, `summary.json`) into any AI agent (via our [rust-recon](https://github.com/NVN404/rust-recon) Skill), you force the AI to write recon reports based strictly on mathematically verified facts, eliminating hallucination.
 
 ##  What Our Tool Does
 
@@ -26,13 +26,19 @@ When you run `rust-recon` in an Anchor directory, it surgically extracts:
 4.  **Recon Signals (Parser Metadata):** Aggregates extracted patterns (for example `UncheckedAccount`, `init_if_needed`, unchecked arithmetic, and `remaining_accounts`) into structured flags for downstream report generation.
 5.  **Error Code Registry:** Pulls all custom errors mapped across the project.
 
-It dumps this directly into an organized `.rust-recon/` directory containing `scope.json`, `facts.json`, and `summary.json`.
+It dumps this directly into an organized `.rust-recon/` directory containing:
+- `scope.json`
+- `global_facts.json`
+- `facts/index.json`
+- `facts/NN_instruction-name.json` (one file per instruction)
+- `summary.json`
+- `facts.json` (legacy compatibility file)
 
 ---
 
 ##  Generated Recon Reports (Via rust-recon Skill)
 
-`rust-recon` by itself generates **raw JSON files** (`scope.json`, `facts.json`, `summary.json`).
+`rust-recon` by itself generates **raw JSON files** (`scope.json`, split facts files, `summary.json`, plus legacy `facts.json`).
 
 To convert these into beautifully formatted **recon reports**, use the [rust-recon](https://github.com/NVN404/rust-recon) Custom Skill with your AI agent (Claude, Copilot, Cursor, Codex, etc.), which generates strict 9-section markdown reports:
 
@@ -118,22 +124,27 @@ Where **[format]** is optional: `condensed` or `detailed`. If omitted, the skill
 
 ---
 
-### Path 1: Via Custom Skill (Recommended ⭐)
+### The 2-Step Auditing Workflow (For every project)
 
-The easiest way to use `rust-recon` is through the **[rust-recon](https://github.com/NVN404/rust-recon)** Custom Skill, which works with any AI agent.
+When you start auditing a new Anchor project (e.g., `MissionX`), you only need to run two commands. 
 
-**Installation:**
+**Step 1: Initialize the project (Terminal)**
 ```bash
-git clone https://github.com/NVN404/rust-recon ~/.rust-recon-skill
+cd MissionX
+rust-recon facts
 ```
+*(This extracts the AST JSON data and automatically drops hidden AI pointers into the project so your sandboxed AI agent knows the skill exists).*
 
-**Usage:** Open your AI agent in your Anchor workspace and use the universal command pattern shown above.
-
-Your AI agent automatically downloads the tool, runs extraction, and generates your report. **Zero manual CLI commands needed.**
+**Step 2: Generate the report (AI Agent)**
+Open your AI agent (Copilot, Cursor, or Claude) in the `MissionX` folder and type:
+```
+@rust-recon detailed
+```
+*(The AI agent automatically reads the pointers, fetches your global skill instructions, processes split facts outputs, and generates the 9-section markdown report.)*
 
 ---
 
-### Path 2: Direct Tool Usage (Manual)
+### Fallback: Direct Tool Usage (Manual)
 
 If you prefer to use the tool directly (or integrate it into CI/CD), install it globally:
 
@@ -153,7 +164,8 @@ rust-recon scope
 rust-recon facts
 
 # 3. Check the generated .rust-recon/ folder for JSON outputs
-cat .rust-recon/facts.json
+cat .rust-recon/global_facts.json
+cat .rust-recon/facts/index.json
 ```
 
 **Note:** Using the tool directly gives you raw JSON outputs. To generate formatted recon reports, use the [rust-recon](https://github.com/NVN404/rust-recon) Custom Skill with your AI agent or pipe the JSON into your own report generation pipeline.
