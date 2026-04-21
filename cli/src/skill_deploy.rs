@@ -68,17 +68,26 @@ pub fn deploy_skill_configs(project_root: &Path) -> Result<()> {
     }
     
     // Use relative paths for the pointers since the files are now in the workspace
-     let pointer_content = r#"# rust-recon Skill (Zero-Loss Recon)
+     let pointer_content = r#"# rust-recon Skill Pointer (One-Command Recon)
 
 <critical_directives>
 1. YOU ARE FORBIDDEN FROM WRITING PYTHON, BASH, OR NODE SCRIPTS TO PARSE JSON.
 2. YOU MUST USE YOUR NATIVE FILE-READING TOOLS.
 3. YOU MUST OUTPUT THE REPORT DIRECTLY USING NATIVE REASONING.
+4. THIS POINTER DEFINES A NON-INTERACTIVE ORCHESTRATION FLOW.
 </critical_directives>
 
-When asked to generate a recon report (via `/recon`, `@rust-recon`, or any recon request):
+## Trigger Contract
+
+When the user invokes any recon trigger (`/recon`, `/recon detailed`, `/recon condensed`, `@rust-recon`, `@rust-recon detailed`, `@rust-recon condensed`) or asks for a recon report in natural language:
+
+- Start orchestration immediately.
+- Default format is `detailed` unless `condensed` is explicitly requested.
+- Do NOT ask for confirmation to write the report.
+- Do NOT stop after JSON extraction.
 
 ## CRITICAL RULE: ZERO DATA LOSS
+
 - EVERY instruction gets a full Section 2 subsection (2a-2f).
 - EVERY param, account, error, step, and mutation MUST appear in the report.
 - NEVER write "omitted for brevity". NEVER skip instructions.
@@ -89,37 +98,44 @@ When asked to generate a recon report (via `/recon`, `@rust-recon`, or any recon
 Before any report synthesis, you MUST output this exact line:
 "I am beginning a native reasoning pass over facts.json. I will not use temporary scripts. I will ensure zero data loss."
 
-## Workflow
+## One-Command Orchestration Sequence (Mandatory)
 
-1. Read the skill instructions from these files IN ORDER:
-    - `.rust-recon/skill/core.md`
-    - `.rust-recon/skill/references/facts-schema.md`
-    - `.rust-recon/skill/references/section-specs.md`
-    - `.rust-recon/skill/references/audit-patterns.md`
-    - `.rust-recon/skill/references/cpi-rules.md`
-    - `.rust-recon/skill/guardrails.md`
+1. Read skill instructions from these files IN ORDER:
+   - `.rust-recon/skill/core.md`
+   - `.rust-recon/skill/references/facts-schema.md`
+   - `.rust-recon/skill/references/section-specs.md`
+   - `.rust-recon/skill/references/audit-patterns.md`
+   - `.rust-recon/skill/references/cpi-rules.md`
+   - `.rust-recon/skill/guardrails.md`
 
-2. Run the extraction tools (if outputs are missing or outdated):
-    `rust-recon scope`
-    `rust-recon facts`
+2. Run extraction tools:
+   - `rust-recon scope`
+   - `rust-recon facts`
 
 3. Read extracted data in this exact order:
-    - `.rust-recon/scope.json`
-    - `.rust-recon/global_facts.json`
-    - `.rust-recon/facts/index.json`
-    - Every file listed in `.rust-recon/facts/index.json`, in ascending `order`
-    - `.rust-recon/summary.json`
+   - `.rust-recon/scope.json`
+   - `.rust-recon/global_facts.json`
+   - `.rust-recon/facts/index.json`
+   - Every file listed in `.rust-recon/facts/index.json`, in ascending `order`
+   - `.rust-recon/summary.json`
+   - Fallback only if split facts are missing: `.rust-recon/facts.json`
 
-4. Fallback compatibility path:
-    - If split facts files are missing, read `.rust-recon/facts.json` completely.
+4. Generate the report as the mandatory next step:
+    - Write `recon.md` at project root.
+    - If the user explicitly requests `RECON_REPORT.md`, write that filename instead.
+   - Follow section-specs exactly.
+   - Verify: instruction count in report == instruction count in extracted facts.
 
-5. Follow the skill instructions exactly to generate `recon.md` at the project root.
-    Verify: instruction count in report == instruction count in extracted facts.
+5. Fail-closed cleanup as the mandatory final step:
+   - Run `rust-recon clean` immediately after successful report write.
+   - If cleanup fails, attempt `rm -rf .rust-recon`.
+   - If `.rust-recon` still exists after fallback, return a failure state (do not claim success).
 
-6. After generating the report, run `rust-recon clean` to clean up the workspace.
+## Completion Rules
 
-Do NOT generate reports without reading the skill files first.
-Do NOT skip or summarize any extracted data.
+- Recon execution is successful only if all three complete: extraction, report write, cleanup.
+- Never end the run after extraction only.
+- Never ask "Should I write the file?" once a recon trigger is received.
 "#;
 
     // 1. Deploy CLAUDE.md into .rust-recon/
