@@ -1,5 +1,5 @@
 use crate::types::*;
-use syn::{Block, Stmt, Expr, ExprAssign, ExprMethodCall, ExprCall, ExprIf};
+use syn::{BinOp, Block, Expr, ExprCall, ExprMethodCall, Member, Stmt};
 use quote::ToTokens;
 use quote::quote;
 
@@ -39,15 +39,19 @@ fn process_stmt(stmt: &Stmt, facts: &mut BodyFacts, counter: &mut usize) {
             let assigned_name = extract_pat_name(&local.pat);
             if let Some(init) = &local.init {
                 let expr_tokens = init.expr.to_token_stream().to_string();
+                let compact_expr_tokens = compact_tokens(&expr_tokens);
                 
                 if expr_tokens.contains("lamports") || expr_tokens.contains("borrow_mut") {
                     // Just recorded in step
                 }
                 
-                if expr_tokens.contains("invoke") || expr_tokens.contains("cpi::") || 
-                   expr_tokens.contains("token::") || expr_tokens.contains("system_program::") ||
-                   expr_tokens.contains("transfer_checked") || expr_tokens.contains("mint_to") ||
-                   expr_tokens.contains("set_authority") {
+                if compact_expr_tokens.contains("invoke")
+                    || compact_expr_tokens.contains("cpi::")
+                    || compact_expr_tokens.contains("token::")
+                    || compact_expr_tokens.contains("token_2022::")
+                    || compact_expr_tokens.contains("system_program::")
+                    || compact_expr_tokens.contains("set_authority")
+                {
                     if let Expr::Call(call) = &*init.expr {
                         process_cpi_function_call(call, facts, *counter);
                     } else if let Expr::MethodCall(mc) = &*init.expr {
@@ -75,13 +79,15 @@ fn process_stmt(stmt: &Stmt, facts: &mut BodyFacts, counter: &mut usize) {
 fn process_expr(expr: &Expr, facts: &mut BodyFacts, counter: &mut usize) {
     match expr {
         Expr::Assign(assign) => {
-            let lhs = quote!(#assign.left).to_string();
-            let rhs = quote!(#assign.right).to_string();
+            let lhs = assign.left.to_token_stream().to_string();
+            let rhs = assign.right.to_token_stream().to_string();
             
             if lhs.contains("lamports") || rhs.contains("lamports") {
                 detect_lamport_flow(&lhs, &rhs, facts, *counter);
             } else {
-                let (account, field) = split_field_access(&lhs).unwrap_or((lhs.clone(), "unknown".to_string()));
+                let (account, field) = extract_field_target(assign.left.as_ref())
+                    .or_else(|| split_field_access(&lhs))
+                    .unwrap_or((lhs.clone(), "unknown".to_string()));
                 facts.state_mutations.push(StateMutation {
                     account: account.clone(),
                     field: field.clone(),
@@ -99,9 +105,39 @@ fn process_expr(expr: &Expr, facts: &mut BodyFacts, counter: &mut usize) {
             }
         }
 
+        // syn v2 parses `+=`, `-=`, ... as Expr::Binary with assign BinOp variants.
+        Expr::Binary(binary) => {
+            if let Some((op_symbol, op_name)) = compound_assign_info(&binary.op) {
+                let lhs = binary.left.to_token_stream().to_string();
+                let rhs = binary.right.to_token_stream().to_string();
+
+                if lhs.contains("lamports") || rhs.contains("lamports") {
+                    detect_lamport_flow(&lhs, &format!("{} {} {}", lhs, op_symbol, rhs), facts, *counter);
+                } else {
+                    let (account, field) = extract_field_target(binary.left.as_ref())
+                        .or_else(|| split_field_access(&lhs))
+                        .unwrap_or((lhs.clone(), "unknown".to_string()));
+                    facts.state_mutations.push(StateMutation {
+                        account: account.clone(),
+                        field: field.clone(),
+                        operation: op_name.to_string(),
+                        value_expression: format!("{} {} {}", lhs, op_symbol, rhs),
+                        instruction_order: *counter,
+                    });
+                    facts.execution_steps.push(ExecutionStep {
+                        order: *counter,
+                        kind: StepKind::CompoundAssignment,
+                        expression: format!("{} {} {}", lhs, op_symbol, rhs),
+                        assigned_to: Some(lhs.clone()),
+                        source_hint: Some(format!("unchecked {} operator", op_symbol)),
+                    });
+                }
+            }
+        }
+
         Expr::MethodCall(method_call) => {
             let method_name = method_call.method.to_string();
-            let expr_str = quote!(#expr).to_string();
+            let expr_str = expr.to_token_stream().to_string();
 
             if is_cpi_method(&method_name) {
                 process_cpi_method_call(method_call, facts, *counter);
@@ -117,20 +153,40 @@ fn process_expr(expr: &Expr, facts: &mut BodyFacts, counter: &mut usize) {
         }
 
         Expr::Call(call) => {
-            let func_str = quote!(#call.func).to_string();
-            let expr_str = quote!(#expr).to_string();
+            let func_str = call.func.to_token_stream().to_string();
+            let expr_str = expr.to_token_stream().to_string();
+            let func_compact = compact_tokens(&func_str);
+
+            // Bug 4 fix: Skip Ok(()) and Err(...) — they're returns, not CPIs
+            if func_compact == "Ok" || func_compact == "Err" {
+                facts.execution_steps.push(ExecutionStep {
+                    order: *counter,
+                    kind: StepKind::Return,
+                    expression: expr_str,
+                    assigned_to: None,
+                    source_hint: None,
+                });
+                return;
+            }
 
             if is_cpi_function(&func_str) {
                 process_cpi_function_call(call, facts, *counter);
             }
 
-            if func_str.contains("set_authority") {
+            if func_compact.contains("set_authority") {
                 extract_set_authority(call, facts, *counter);
             }
 
+            // Only classify as CPI if it actually is one
+            let kind = if is_cpi_function(&func_str) {
+                StepKind::CpiCall
+            } else {
+                StepKind::FunctionCall
+            };
+
             facts.execution_steps.push(ExecutionStep {
                 order: *counter,
-                kind: StepKind::CpiCall,
+                kind,
                 expression: expr_str,
                 assigned_to: None,
                 source_hint: None,
@@ -153,12 +209,38 @@ fn process_expr(expr: &Expr, facts: &mut BodyFacts, counter: &mut usize) {
                         source_hint: None,
                     });
                 }
+                // Bug 5 fix: Add require! macros to execution steps
+                "require" | "require_gt" | "require_gte" | "require_eq" |
+                "require_neq" | "require_keys_eq" | "require_keys_neq" => {
+                    let tokens = mac.mac.tokens.to_token_stream().to_string();
+                    facts.execution_steps.push(ExecutionStep {
+                        order: *counter,
+                        kind: StepKind::RequireCheck,
+                        expression: format!("{}!({})", macro_name, tokens),
+                        assigned_to: None,
+                        source_hint: None,
+                    });
+                }
                 _ => {}
             }
         }
 
+        Expr::Return(expr_return) => {
+            let expression = match &expr_return.expr {
+                Some(inner) => inner.to_token_stream().to_string(),
+                None => "return".to_string(),
+            };
+            facts.execution_steps.push(ExecutionStep {
+                order: *counter,
+                kind: StepKind::Return,
+                expression,
+                assigned_to: None,
+                source_hint: None,
+            });
+        }
+
         Expr::If(expr_if) => {
-            let condition = quote!(#expr_if.cond).to_string();
+            let condition = expr_if.cond.to_token_stream().to_string();
             facts.execution_steps.push(ExecutionStep {
                 order: *counter,
                 kind: StepKind::ConditionalBranch,
@@ -191,6 +273,61 @@ fn process_expr(expr: &Expr, facts: &mut BodyFacts, counter: &mut usize) {
     }
 }
 
+fn extract_field_target(lhs: &Expr) -> Option<(String, String)> {
+    match lhs {
+        Expr::Field(field) => {
+            let field_name = member_to_string(&field.member)?;
+            let account = extract_base_account(field.base.as_ref())
+                .unwrap_or_else(|| fallback_expr_name(field.base.as_ref()));
+            Some((account, field_name))
+        }
+        Expr::Paren(paren) => extract_field_target(paren.expr.as_ref()),
+        Expr::Reference(reference) => extract_field_target(reference.expr.as_ref()),
+        _ => None,
+    }
+}
+
+fn extract_base_account(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Field(field) => {
+            if let Expr::Field(inner) = field.base.as_ref() {
+                if member_is_named(&inner.member, "accounts") {
+                    return member_to_string(&field.member);
+                }
+            }
+            extract_base_account(field.base.as_ref())
+        }
+        Expr::MethodCall(method_call) => extract_base_account(method_call.receiver.as_ref()),
+        Expr::Paren(paren) => extract_base_account(paren.expr.as_ref()),
+        Expr::Reference(reference) => extract_base_account(reference.expr.as_ref()),
+        Expr::Path(path) => path.path.segments.last().map(|s| s.ident.to_string()),
+        _ => None,
+    }
+}
+
+fn fallback_expr_name(expr: &Expr) -> String {
+    match expr {
+        Expr::Field(field) => member_to_string(&field.member)
+            .unwrap_or_else(|| expr.to_token_stream().to_string()),
+        Expr::Path(path) => path.path.segments
+            .last()
+            .map(|s| s.ident.to_string())
+            .unwrap_or_else(|| expr.to_token_stream().to_string()),
+        _ => expr.to_token_stream().to_string(),
+    }
+}
+
+fn member_to_string(member: &Member) -> Option<String> {
+    match member {
+        Member::Named(ident) => Some(ident.to_string()),
+        Member::Unnamed(idx) => Some(idx.index.to_string()),
+    }
+}
+
+fn member_is_named(member: &Member, expected: &str) -> bool {
+    matches!(member, Member::Named(ident) if ident == expected)
+}
+
 fn split_field_access(lhs: &str) -> Option<(String, String)> {
     let parts: Vec<&str> = lhs.split('.').collect();
     if parts.len() >= 2 {
@@ -218,17 +355,43 @@ fn detect_operation_style(rhs: &str) -> String {
     "assign".to_string()
 }
 
+fn compound_assign_info(op: &BinOp) -> Option<(&'static str, &'static str)> {
+    match op {
+        BinOp::AddAssign(_) => Some(("+=", "unchecked_add_assign")),
+        BinOp::SubAssign(_) => Some(("-=", "unchecked_sub_assign")),
+        BinOp::MulAssign(_) => Some(("*=", "unchecked_mul_assign")),
+        BinOp::DivAssign(_) => Some(("/=", "unchecked_div_assign")),
+        BinOp::RemAssign(_) => Some(("%=", "unchecked_rem_assign")),
+        BinOp::BitAndAssign(_) => Some(("&=", "assign_op")),
+        BinOp::BitOrAssign(_) => Some(("|=", "assign_op")),
+        BinOp::BitXorAssign(_) => Some(("^=", "assign_op")),
+        BinOp::ShlAssign(_) => Some(("<<=", "assign_op")),
+        BinOp::ShrAssign(_) => Some((">>=", "assign_op")),
+        _ => None,
+    }
+}
+
 fn is_cpi_method(method: &str) -> bool {
     method == "transfer" || method == "transfer_checked" || method == "mint_to" || method == "burn" || method == "invoke" || method == "invoke_signed"
 }
 
 fn is_cpi_function(func: &str) -> bool {
-    func.contains("token::") || func.contains("system_program::") || func.contains("invoke") || func.contains("transfer_checked")  || func.contains("mint_to")
+    let compact = compact_tokens(func);
+    compact.contains("token::")
+        || compact.contains("token_2022::")
+        || compact.contains("system_program::")
+        || compact.contains("system_instruction::")
+        || compact.contains("invoke")
+        || compact.contains("transfer_checked")
+        || compact.contains("mint_to")
 }
 
 fn process_cpi_method_call(call: &ExprMethodCall, facts: &mut BodyFacts, order: usize) {
     let method = call.method.to_string();
-    let amount_expr = call.args.first().map(|a| quote!(#a).to_string()).unwrap_or_else(|| "NOT_EXTRACTED".to_string());
+    let amount_expr = call.args
+        .first()
+        .map(|a| a.to_token_stream().to_string())
+        .unwrap_or_else(|| "NOT_EXTRACTED".to_string());
     if is_token_cpi(&method) {
         facts.token_flows.push(TokenFlow {
             from: "NOT_EXTRACTED".to_string(),
@@ -241,16 +404,22 @@ fn process_cpi_method_call(call: &ExprMethodCall, facts: &mut BodyFacts, order: 
 }
 
 fn process_cpi_function_call(call: &ExprCall, facts: &mut BodyFacts, order: usize) {
-    let func_str = quote!(#call.func).to_string();
-    let args_str: Vec<String> = call.args.iter().map(|a| quote!(#a).to_string()).collect();
+    let func_str = call.func.to_token_stream().to_string();
+    let func_compact = compact_tokens(&func_str);
+    let args_str: Vec<String> = call
+        .args
+        .iter()
+        .map(|a| a.to_token_stream().to_string())
+        .collect();
 
     let mut method = extract_cpi_method_name(&func_str);
-    let mut cpi_ctx_arg = args_str.get(0).cloned().unwrap_or_default();
+    let cpi_ctx_arg = args_str.get(0).cloned().unwrap_or_default();
     let mut amount_expr = args_str.get(1).cloned().unwrap_or_else(|| "NOT_EXTRACTED".to_string());
+    let cpi_ctx_compact = compact_tokens(&cpi_ctx_arg);
 
     // Handle direct invoke of system_instruction::transfer
     if method == "invoke" || method == "invoke_signed" {
-        if cpi_ctx_arg.contains("system_instruction :: transfer") || cpi_ctx_arg.contains("system_instruction::transfer") {
+        if cpi_ctx_compact.contains("system_instruction::transfer") {
             method = "transfer".to_string();
             let inner_call = cpi_ctx_arg.replace("& system_instruction :: transfer", "").replace("&system_instruction::transfer", "");
             if let Some(start) = inner_call.find('(') {
@@ -297,7 +466,7 @@ fn process_cpi_function_call(call: &ExprCall, facts: &mut BodyFacts, order: usiz
         });
     }
 
-    if method == "transfer" && (func_str.contains("system") || cpi_ctx_arg.contains("system")) {
+    if method == "transfer" && (func_compact.contains("system") || cpi_ctx_compact.contains("system")) {
         let (from_account, to_account) = extract_transfer_accounts_from_ctx(&cpi_ctx_arg, &method);
         facts.sol_flows.push(SolFlow {
             from: from_account,
@@ -311,7 +480,7 @@ fn process_cpi_function_call(call: &ExprCall, facts: &mut BodyFacts, order: usiz
 
 fn extract_cpi_method_name(func: &str) -> String {
     let parts: Vec<&str> = func.split("::").collect();
-    parts.last().unwrap_or(&func).to_string()
+    parts.last().unwrap_or(&func).trim().to_string()
 }
 
 fn is_token_cpi(method: &str) -> bool {
@@ -321,7 +490,7 @@ fn is_token_cpi(method: &str) -> bool {
 fn extract_cpi_program(func: &str) -> String {
     let parts: Vec<&str> = func.split("::").collect();
     if parts.len() > 1 {
-        parts[0].to_string()
+        parts[0].trim().to_string()
     } else {
         "unknown".to_string()
     }
@@ -408,7 +577,11 @@ fn extract_amount_from_lamport_expr(expr: &str) -> Option<String> {
 }
 
 fn extract_set_authority(call: &ExprCall, facts: &mut BodyFacts, order: usize) {
-    let args: Vec<String> = call.args.iter().map(|a| quote!(#a).to_string()).collect();
+    let args: Vec<String> = call
+        .args
+        .iter()
+        .map(|a| a.to_token_stream().to_string())
+        .collect();
 
     let authority_type = args.get(1).map(|a| clean_authority_type(a)).unwrap_or("UNKNOWN".to_string());
     let new_authority = args.get(2).map(|a| a.trim().to_string()).unwrap_or("UNKNOWN".to_string());
@@ -442,6 +615,10 @@ fn extract_account_from_set_authority_ctx(ctx_str: &str) -> String {
 
 fn extract_emit_event(mac: &syn::Macro) -> String {
     mac.tokens.to_token_stream().to_string()
+}
+
+fn compact_tokens(input: &str) -> String {
+    input.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 #[cfg(test)]
@@ -493,5 +670,19 @@ mod tests {
         assert_eq!(flows.len(), 1);
         assert_eq!(flows[0].from, "bonding_curve");
         assert_eq!(flows[0].to, "escape_fee_treasury");
+    }
+
+    #[test]
+    fn test_extract_field_target_from_ctx_accounts() {
+        let expr: Expr = syn::parse_str("ctx.accounts.state.balance").expect("valid expr");
+        let (account, field) = extract_field_target(&expr).expect("field target");
+        assert_eq!(account, "state");
+        assert_eq!(field, "balance");
+    }
+
+    #[test]
+    fn test_compact_tokens_removes_whitespace() {
+        let compact = compact_tokens("token :: transfer_checked");
+        assert_eq!(compact, "token::transfer_checked");
     }
 }

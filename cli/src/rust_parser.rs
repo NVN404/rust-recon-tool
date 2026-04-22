@@ -145,6 +145,67 @@ fn auto_tag_field(field_name: &str, field_type: &str) -> Vec<String> {
     tags
 }
 
+fn has_account_flag(tokens_str: &str, flag: &str) -> bool {
+    tokens_str
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|part| part == flag)
+}
+
+fn has_derive_marker(attrs: &[syn::Attribute], marker: &str) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("derive") && attr.to_token_stream().to_string().contains(marker)
+    })
+}
+
+fn binary_op_name(op: &syn::BinOp) -> Option<&'static str> {
+    match op {
+        syn::BinOp::Add(_) => Some("add"),
+        syn::BinOp::Sub(_) => Some("sub"),
+        syn::BinOp::Mul(_) => Some("mul"),
+        syn::BinOp::Div(_) => Some("div"),
+        syn::BinOp::Rem(_) => Some("rem"),
+        _ => None,
+    }
+}
+
+fn assign_op_name(op: &syn::BinOp) -> Option<&'static str> {
+    match op {
+        syn::BinOp::AddAssign(_) => Some("add_assign"),
+        syn::BinOp::SubAssign(_) => Some("sub_assign"),
+        syn::BinOp::MulAssign(_) => Some("mul_assign"),
+        syn::BinOp::DivAssign(_) => Some("div_assign"),
+        syn::BinOp::RemAssign(_) => Some("rem_assign"),
+        _ => None,
+    }
+}
+
+fn normalize_error_reference(raw: &str) -> String {
+    let compact: String = raw.chars().filter(|c| !c.is_whitespace()).collect();
+    if let Some(idx) = compact.find("ErrorCode::") {
+        let tail = &compact[idx + "ErrorCode::".len()..];
+        let ident: String = tail
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !ident.is_empty() {
+            return format!("ErrorCode::{}", ident);
+        }
+        return "ErrorCode".to_string();
+    }
+    raw.trim().to_string()
+}
+
+fn extract_error_reference_from_path(path: &syn::Path) -> Option<String> {
+    let segments: Vec<String> = path.segments.iter().map(|s| s.ident.to_string()).collect();
+    if let Some(idx) = segments.iter().position(|seg| seg == "ErrorCode") {
+        if idx + 1 < segments.len() {
+            return Some(format!("ErrorCode::{}", segments[idx + 1]));
+        }
+        return Some("ErrorCode".to_string());
+    }
+    None
+}
+
 // Support structs for visiting function bodies specifically
 struct BodyVisitor {
     body_checks: Vec<BodyCheck>,
@@ -152,6 +213,7 @@ struct BodyVisitor {
     events_emitted: Vec<String>,
     uses_remaining_accounts: bool,
     error_codes_referenced: Vec<String>,
+    capture_raw_binary_context: bool,
 }
 
 impl<'ast> syn::visit::Visit<'ast> for BodyVisitor {
@@ -159,10 +221,15 @@ impl<'ast> syn::visit::Visit<'ast> for BodyVisitor {
         let mac_path = m.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
         let tokens_str = m.tokens.to_token_stream().to_string();
         
-        if mac_path == "require" || mac_path == "require_gt" || mac_path == "require_gte" || mac_path == "require_neq" {
+        if mac_path == "require"
+            || mac_path == "require_gt"
+            || mac_path == "require_gte"
+            || mac_path == "require_eq"
+            || mac_path == "require_neq"
+        {
             let parts: Vec<&str> = tokens_str.splitn(2, ',').collect();
             if parts.len() == 2 {
-                let err = parts[1].trim().to_string();
+                let err = normalize_error_reference(parts[1]);
                 self.body_checks.push(BodyCheck {
                     macro_name: mac_path,
                     condition: Some(parts[0].trim().to_string()),
@@ -174,10 +241,10 @@ impl<'ast> syn::visit::Visit<'ast> for BodyVisitor {
                     self.error_codes_referenced.push(err);
                 }
             }
-        } else if mac_path == "require_keys_eq" {
+        } else if mac_path == "require_keys_eq" || mac_path == "require_keys_neq" {
             let parts: Vec<&str> = tokens_str.splitn(3, ',').collect();
             if parts.len() == 3 {
-                let err = parts[2].trim().to_string();
+                let err = normalize_error_reference(parts[2]);
                 self.body_checks.push(BodyCheck {
                     macro_name: mac_path,
                     condition: None,
@@ -234,32 +301,53 @@ impl<'ast> syn::visit::Visit<'ast> for BodyVisitor {
         
         syn::visit::visit_expr_method_call(self, i);
     }
+
+    fn visit_local(&mut self, i: &'ast syn::Local) {
+        let previous = self.capture_raw_binary_context;
+        self.capture_raw_binary_context = true;
+        syn::visit::visit_local(self, i);
+        self.capture_raw_binary_context = previous;
+    }
+
+    fn visit_expr_assign(&mut self, i: &'ast syn::ExprAssign) {
+        let previous = self.capture_raw_binary_context;
+        self.capture_raw_binary_context = true;
+        syn::visit::visit_expr_assign(self, i);
+        self.capture_raw_binary_context = previous;
+    }
     
     fn visit_expr_binary(&mut self, i: &'ast syn::ExprBinary) {
-        let op_str = match i.op {
-            syn::BinOp::Add(_) => Some("add"),
-            syn::BinOp::Sub(_) => Some("sub"),
-            syn::BinOp::Mul(_) => Some("mul"),
-            syn::BinOp::Div(_) => Some("div"),
-            _ => None,
-        };
-        
-        if let Some(op) = op_str {
-            let expr_str = i.to_token_stream().to_string();
-            // Flag raw math if variables imply amounts
-            if expr_str.contains("amount") || expr_str.contains("balance") || expr_str.contains("total") ||
-               expr_str.contains("shares") || expr_str.contains("reward") || expr_str.contains("fee") ||
-               expr_str.contains("price") || expr_str.contains("reserve") {
+        if let Some(op) = assign_op_name(&i.op) {
+            self.arithmetic.push(Arithmetic {
+                operation: op.to_string(),
+                style: "unchecked".to_string(),
+                expression: i.to_token_stream().to_string(),
+                overflow_risk: true,
+            });
+        }
+
+        if self.capture_raw_binary_context {
+            if let Some(op) = binary_op_name(&i.op) {
                 self.arithmetic.push(Arithmetic {
                     operation: op.to_string(),
                     style: "unchecked".to_string(),
-                    expression: expr_str,
+                    expression: i.to_token_stream().to_string(),
                     overflow_risk: true,
                 });
             }
         }
         
         syn::visit::visit_expr_binary(self, i);
+    }
+
+    // Bug 8 fix: Catch ErrorCode:: references in return statements, match arms, etc.
+    fn visit_expr_path(&mut self, i: &'ast syn::ExprPath) {
+        if let Some(err_ref) = extract_error_reference_from_path(&i.path) {
+            if !self.error_codes_referenced.contains(&err_ref) {
+                self.error_codes_referenced.push(err_ref);
+            }
+        }
+        syn::visit::visit_expr_path(self, i);
     }
 }
 
@@ -364,6 +452,7 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for AnchorVisitor<'a> {
             events_emitted: vec![],
             uses_remaining_accounts: false,
             error_codes_referenced: vec![],
+            capture_raw_binary_context: false,
         };
         syn::visit::Visit::visit_block(&mut body_visitor, &i.block);
         let body_facts = crate::flow_extractor::extract_body_facts(&i.block);
@@ -447,10 +536,7 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for AnchorVisitor<'a> {
     fn visit_item_struct(&mut self, i: &'ast syn::ItemStruct) {
         let name = i.ident.to_string();
         
-        let is_accounts = i.attrs.iter().any(|attr| {
-            let path = attr.path().segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
-            path == "derive" && attr.to_token_stream().to_string().contains("Accounts")
-        });
+        let is_accounts = has_derive_marker(&i.attrs, "Accounts");
         
         if is_accounts {
             let mut fields = Vec::new();
@@ -476,7 +562,7 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for AnchorVisitor<'a> {
                             if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
                                 if w_type == "Account" || w_type == "Program" || w_type == "Box" || w_type == "UncheckedAccount" {
                                     // inner constraint
-                                    let mut type_args = args.args.iter();
+                                    let type_args = args.args.iter();
                                     // Usually Account<'info, Inner> so we skip lifetime
                                     for arg in type_args {
                                         if let syn::GenericArgument::Type(syn::Type::Path(inner_path)) = arg {
@@ -504,7 +590,12 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for AnchorVisitor<'a> {
                             let tokens_str = attr.meta.to_token_stream().to_string();
                             attributes = tokens_str.clone();
                             constraints.push(tokens_str.clone());
-                            if tokens_str.contains("mut") { is_mut = true; }
+                            if has_account_flag(&tokens_str, "mut")
+                                || has_account_flag(&tokens_str, "init")
+                                || has_account_flag(&tokens_str, "init_if_needed")
+                            {
+                                is_mut = true;
+                            }
                             
                             // Extract close target
                             if tokens_str.contains("close = ") {
@@ -559,21 +650,32 @@ impl<'ast, 'a> syn::visit::Visit<'ast> for AnchorVisitor<'a> {
             });
         }
         
-        // NEW: Extract data structs with #[account] macro (not just Context structs)
+        // Extract data structs with #[account] and auxiliary Anchor serde structs.
         let is_data_account = i.attrs.iter().any(|attr| {
             let path = attr.path().segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
             path == "account"
         });
+        let has_anchor_serde = has_derive_marker(&i.attrs, "AnchorSerialize")
+            || has_derive_marker(&i.attrs, "AnchorDeserialize");
+        let is_auxiliary_data_struct = !is_accounts && !is_data_account && has_anchor_serde;
         
-        if is_data_account && !is_accounts {
+        if !is_accounts && (is_data_account || is_auxiliary_data_struct) {
             let mut data_fields = Vec::new();
             let mut attributes = Vec::new();
             
-            // Collect all #[account(...)] attributes
+            // Collect relevant attributes for downstream reporting.
             for attr in &i.attrs {
-                if attr.path().segments.last().map(|s| s.ident.to_string()).unwrap_or_default() == "account" {
-                    attributes.push(attr.to_token_stream().to_string());
+                let path = attr.path().segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+                let attr_str = attr.to_token_stream().to_string();
+                if path == "account"
+                    || (path == "derive"
+                        && (attr_str.contains("AnchorSerialize") || attr_str.contains("AnchorDeserialize")))
+                {
+                    attributes.push(attr_str);
                 }
+            }
+            if is_auxiliary_data_struct {
+                attributes.push("auxiliary_struct".to_string());
             }
             
             // Extract fields from the struct

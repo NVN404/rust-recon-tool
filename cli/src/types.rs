@@ -209,8 +209,10 @@ pub struct ExecutionStep {
 pub enum StepKind {
     FieldRead,
     FieldAssignment,
+    CompoundAssignment,
     Arithmetic,
     CpiCall,
+    FunctionCall,
     LamportTransfer,
     SetAuthority,
     RequireCheck,
@@ -218,6 +220,7 @@ pub enum StepKind {
     ConditionalBranch,
     LetBinding,
     MethodCall,
+    Return,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
